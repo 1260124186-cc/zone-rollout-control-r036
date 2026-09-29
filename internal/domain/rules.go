@@ -57,47 +57,61 @@ func RecordLeaseFinished(state *State, lease NodeLease) {
 	if lease.ID == "" || lease.NodeID == "" {
 		return
 	}
-	state.ActiveLeaseByNode[lease.NodeID] = lease.ID
-	delete(state.ActiveLeaseByNode, lease.ID)
+	// Only clear the occupancy while this lease is still the one holding the
+	// node. A newer claim for the same node must keep the node isolated.
+	if active, exists := state.ActiveLeaseByNode[lease.NodeID]; exists && active == lease.ID {
+		delete(state.ActiveLeaseByNode, lease.NodeID)
+	}
 }
 
-func RebuildLeaseOccupancy(state *State) {
-	candidates := make(map[string]NodeLease, len(state.Leases))
+// RebuildLeaseOccupancy rebuilds the node occupancy index from the lease set
+// after a reload. Node availability is driven exclusively by leases that are
+// still claimed at now: reported, released and expired leases never block the
+// node, while a live claimed lease keeps it isolated. A node stays isolated as
+// long as any of its leases is still claimed, even when a newer lease for the
+// same node has already ended. It also reconciles lease and node states for
+// claims that reached their deadline while the service was stopped.
+func RebuildLeaseOccupancy(state *State, now time.Time) {
+	active := make(map[string]string)
 	for _, lease := range state.Leases {
-		if lease.ID == "" || lease.NodeID == "" {
+		if lease.ID == "" || lease.NodeID == "" || lease.State != LeaseClaimed {
 			continue
 		}
-		current, exists := candidates[lease.NodeID]
-		if !exists || laterLease(lease, current) {
-			candidates[lease.NodeID] = lease
-		}
-	}
-	active := make(map[string]string, len(candidates))
-	for nodeID, lease := range candidates {
-		if !occupancySurvivesReload(lease) {
+		if !lease.ExpiresAt.After(now) {
+			finishDueLease(state, lease, now)
 			continue
 		}
-		active[nodeID] = lease.ID
+		current, exists := active[lease.NodeID]
+		if !exists || lease.ID > current {
+			active[lease.NodeID] = lease.ID
+		}
 	}
 	state.ActiveLeaseByNode = active
+	reconcileNodeStates(state, now)
 }
 
-func laterLease(left NodeLease, right NodeLease) bool {
-	if left.ClaimedAt.After(right.ClaimedAt) {
-		return true
-	}
-	if left.ClaimedAt.Before(right.ClaimedAt) {
-		return false
-	}
-	return left.ID > right.ID
+func finishDueLease(state *State, lease NodeLease, now time.Time) {
+	finishedAt := now
+	lease.State = LeaseExpired
+	lease.FinishedAt = &finishedAt
+	state.Leases[lease.ID] = lease
 }
 
-func occupancySurvivesReload(lease NodeLease) bool {
-	switch lease.State {
-	case LeaseReported, LeaseReleased:
-		return true
-	default:
-		return false
+func reconcileNodeStates(state *State, now time.Time) {
+	for nodeID, node := range state.Nodes {
+		_, occupied := state.ActiveLeaseByNode[nodeID]
+		switch {
+		case occupied && node.State == NodeReady:
+			node.State = NodeLeased
+			node.Version++
+			node.UpdatedAt = now
+			state.Nodes[nodeID] = node
+		case !occupied && node.State == NodeLeased:
+			node.State = NodeReady
+			node.Version++
+			node.UpdatedAt = now
+			state.Nodes[nodeID] = node
+		}
 	}
 }
 

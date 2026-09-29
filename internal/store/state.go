@@ -1,6 +1,10 @@
 package store
 
-import "solo-0014-zone-rollout-control/internal/domain"
+import (
+	"time"
+
+	"solo-0014-zone-rollout-control/internal/domain"
+)
 
 const schemaVersion = 1
 
@@ -48,8 +52,8 @@ func normalize(state domain.State) domain.State {
 	return state
 }
 
-func normalizeLoaded(state domain.State) domain.State {
+func normalizeLoaded(state domain.State, now time.Time) domain.State {
 	state = normalize(state)
-	domain.RebuildLeaseOccupancy(&state)
+	domain.RebuildLeaseOccupancy(&state, now.UTC())
 	return state
 }

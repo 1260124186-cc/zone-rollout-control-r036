@@ -19,9 +19,12 @@ type Store struct {
 	state domain.State
 }
 
-func Open(path string) (*Store, error) {
+func Open(path string, clock platform.Clock) (*Store, error) {
 	if path == "" {
 		return nil, errors.New("snapshot path is required")
+	}
+	if clock == nil {
+		return nil, errors.New("clock is required")
 	}
 	state := blankState()
 	payload, err := os.ReadFile(path)
@@ -30,7 +33,7 @@ func Open(path string) (*Store, error) {
 		if err := json.Unmarshal(payload, &state); err != nil {
 			return nil, fmt.Errorf("decode snapshot: %w", err)
 		}
-		state = normalizeLoaded(state)
+		state = normalizeLoaded(state, clock.Now())
 	case errors.Is(err, os.ErrNotExist):
 		if err := replaceFile(path, state); err != nil {
 			return nil, fmt.Errorf("initialize snapshot: %w", err)
