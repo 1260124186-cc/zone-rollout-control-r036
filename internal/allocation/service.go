@@ -65,7 +65,7 @@ func (s *Service) Allocate(
 		expireLeases(state, now)
 		candidates := make([]domain.ResolverNode, 0)
 		for _, node := range state.Nodes {
-			if node.State == domain.NodeQuarantined {
+			if node.State != domain.NodeReady {
 				continue
 			}
 			if domain.NodeLeaseOccupied(state, node.ID) {
@@ -153,6 +153,12 @@ func (s *Service) Release(ctx context.Context, leaseID string) (domain.NodeLease
 				"state":    lease.State,
 			})
 		}
+		if !domain.LeaseIsCurrent(state, lease) {
+			return domain.NewError(domain.CodeLeaseNotClaimed, "lease is not the active claim for its node", map[string]any{
+				"lease_id": leaseID,
+				"node_id":  lease.NodeID,
+			})
+		}
 		node, ok := state.Nodes[lease.NodeID]
 		if !ok {
 			return domain.NewError(domain.CodeStorageFailure, "lease references a missing node", map[string]any{
@@ -193,16 +199,19 @@ func expireLeases(state *domain.State, now time.Time) int {
 		if lease.State != domain.LeaseClaimed || lease.ExpiresAt.After(now) {
 			continue
 		}
+		isCurrent := domain.LeaseIsCurrent(state, lease)
 		finishedAt := now
 		lease.State = domain.LeaseExpired
 		lease.FinishedAt = &finishedAt
 		state.Leases[leaseID] = lease
-		domain.RecordLeaseFinished(state, lease)
-		if node, ok := state.Nodes[lease.NodeID]; ok && node.State == domain.NodeLeased {
-			node.State = domain.NodeReady
-			node.Version++
-			node.UpdatedAt = now
-			state.Nodes[node.ID] = node
+		if isCurrent {
+			domain.RecordLeaseFinished(state, lease)
+			if node, ok := state.Nodes[lease.NodeID]; ok && node.State == domain.NodeLeased {
+				node.State = domain.NodeReady
+				node.Version++
+				node.UpdatedAt = now
+				state.Nodes[node.ID] = node
+			}
 		}
 		count++
 	}

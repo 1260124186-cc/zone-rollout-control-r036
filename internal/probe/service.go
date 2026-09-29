@@ -76,6 +76,12 @@ func (s *Service) Submit(
 				"expires_at": lease.ExpiresAt,
 			})
 		}
+		if !domain.LeaseIsCurrent(state, lease) {
+			return domain.NewError(domain.CodeLeaseNotClaimed, "lease is not the active claim for its node", map[string]any{
+				"lease_id": leaseID,
+				"node_id":  lease.NodeID,
+			})
+		}
 		plan, ok := state.Plans[lease.PlanID]
 		if !ok {
 			return domain.NewError(domain.CodeStorageFailure, "lease references a missing plan", map[string]any{

@@ -57,29 +57,66 @@ func RecordLeaseFinished(state *State, lease NodeLease) {
 	if lease.ID == "" || lease.NodeID == "" {
 		return
 	}
-	state.ActiveLeaseByNode[lease.NodeID] = lease.ID
-	delete(state.ActiveLeaseByNode, lease.ID)
+	if state.ActiveLeaseByNode[lease.NodeID] == lease.ID {
+		delete(state.ActiveLeaseByNode, lease.NodeID)
+	}
 }
 
 func RebuildLeaseOccupancy(state *State) {
-	candidates := make(map[string]NodeLease, len(state.Leases))
+	RebuildLeaseOccupancyAt(state, time.Now().UTC())
+}
+
+func RebuildLeaseOccupancyAt(state *State, now time.Time) {
+	now = now.UTC()
+	activeByNode := make(map[string]NodeLease)
 	for _, lease := range state.Leases {
-		if lease.ID == "" || lease.NodeID == "" {
+		if lease.ID == "" || lease.NodeID == "" || !isActiveLeaseAt(lease, now) {
 			continue
 		}
-		current, exists := candidates[lease.NodeID]
+		current, exists := activeByNode[lease.NodeID]
 		if !exists || laterLease(lease, current) {
-			candidates[lease.NodeID] = lease
+			activeByNode[lease.NodeID] = lease
 		}
 	}
-	active := make(map[string]string, len(candidates))
-	for nodeID, lease := range candidates {
-		if !occupancySurvivesReload(lease) {
+
+	for leaseID, lease := range state.Leases {
+		if lease.State != LeaseClaimed {
 			continue
 		}
-		active[nodeID] = lease.ID
+		active, isActive := activeByNode[lease.NodeID]
+		if isActive && active.ID == lease.ID {
+			continue
+		}
+
+		// A lease can be missing from the active set because it has expired or
+		// because an older duplicate claim lost recovery to the latest claim.
+		lease.State = LeaseExpired
+		finishedAt := now
+		lease.FinishedAt = &finishedAt
+		state.Leases[leaseID] = lease
 	}
-	state.ActiveLeaseByNode = active
+
+	occupancy := make(map[string]string, len(activeByNode))
+	for nodeID, lease := range activeByNode {
+		occupancy[nodeID] = lease.ID
+	}
+	state.ActiveLeaseByNode = occupancy
+
+	for nodeID, node := range state.Nodes {
+		_, occupied := activeByNode[nodeID]
+		switch {
+		case occupied && node.State != NodeLeased:
+			node.State = NodeLeased
+			node.Version++
+			node.UpdatedAt = now
+			state.Nodes[nodeID] = node
+		case !occupied && node.State == NodeLeased:
+			node.State = NodeReady
+			node.Version++
+			node.UpdatedAt = now
+			state.Nodes[nodeID] = node
+		}
+	}
 }
 
 func laterLease(left NodeLease, right NodeLease) bool {
@@ -92,13 +129,8 @@ func laterLease(left NodeLease, right NodeLease) bool {
 	return left.ID > right.ID
 }
 
-func occupancySurvivesReload(lease NodeLease) bool {
-	switch lease.State {
-	case LeaseReported, LeaseReleased:
-		return true
-	default:
-		return false
-	}
+func isActiveLeaseAt(lease NodeLease, now time.Time) bool {
+	return lease.State == LeaseClaimed && lease.ExpiresAt.After(now)
 }
 
 func NodeLeaseOccupied(state *State, nodeID string) bool {
@@ -107,6 +139,13 @@ func NodeLeaseOccupied(state *State, nodeID string) bool {
 	}
 	_, occupied := state.ActiveLeaseByNode[nodeID]
 	return occupied
+}
+
+func LeaseIsCurrent(state *State, lease NodeLease) bool {
+	if state.ActiveLeaseByNode == nil || lease.ID == "" || lease.NodeID == "" {
+		return false
+	}
+	return state.ActiveLeaseByNode[lease.NodeID] == lease.ID
 }
 
 func ActiveLeaseCount(state *State) int {

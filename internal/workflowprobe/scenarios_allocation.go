@@ -48,5 +48,12 @@ func runNodeLeaseAllocation() error {
 	if released.State != domain.LeaseReleased {
 		return ensure(false, "lease release did not update state")
 	}
+	afterRelease, err := allocate(harness, plan.ID, "lease-request-0003", "east", 2)
+	if err != nil {
+		return err
+	}
+	if len(afterRelease.LeaseIDs) != 1 || afterRelease.LeaseIDs[0] == first.LeaseIDs[0] {
+		return ensure(false, "released node must be immediately eligible for a new lease")
+	}
 	return nil
 }

@@ -20,6 +20,10 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
+	return OpenAt(path, time.Now().UTC())
+}
+
+func OpenAt(path string, now time.Time) (*Store, error) {
 	if path == "" {
 		return nil, errors.New("snapshot path is required")
 	}
@@ -30,7 +34,7 @@ func Open(path string) (*Store, error) {
 		if err := json.Unmarshal(payload, &state); err != nil {
 			return nil, fmt.Errorf("decode snapshot: %w", err)
 		}
-		state = normalizeLoaded(state)
+		state = normalizeLoadedAt(state, now)
 	case errors.Is(err, os.ErrNotExist):
 		if err := replaceFile(path, state); err != nil {
 			return nil, fmt.Errorf("initialize snapshot: %w", err)
